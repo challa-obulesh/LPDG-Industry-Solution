@@ -1,0 +1,1 @@
+# LPDG-Industry-Solution
