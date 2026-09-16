@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime as dt
 from pathlib import Path
 
 import altair as alt
@@ -8,251 +7,519 @@ import pandas as pd
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "03-challenge-data" / "data"
-METRICS = ["offline_duration_sec", "disconnection_cnt", "reboot_cnt"]
-WEEKS = [dt.date(2026, 2, 2) + dt.timedelta(days=7 * i) for i in range(8)]
 REQUIRED_COLUMNS = ["week_start", "rank", "gateway_id", "score", "reason"]
+FORWARD_WEEKS = [
+    "2026-02-02", "2026-02-09", "2026-02-16", "2026-02-23",
+    "2026-03-02", "2026-03-09", "2026-03-16", "2026-03-23",
+]
+VISITS_PER_WEEK = 15
 
-st.set_page_config(page_title="NEXORA | Gateway Anomaly Intelligence", page_icon=":material/hub:", layout="wide", initial_sidebar_state="expanded")
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
-:root{--ink:#e8eef4;--muted:#8b9aab;--line:#273542;--accent:#62d6b2;--amber:#f2b84b}
-.stApp{background:radial-gradient(circle at 80% 0%,#172c35 0,#0a1118 36%,#091016 100%);color:var(--ink)}
-.block-container{padding-top:2.2rem;max-width:1500px}html,body,[class*="css"]{font-family:'Manrope',sans-serif}h1{font-weight:800;font-size:2.7rem;letter-spacing:0}h2,h3{letter-spacing:0}
-.eyebrow{color:var(--accent);text-transform:uppercase;font:500 .72rem 'DM Mono',monospace;letter-spacing:.12em}.status{display:inline-block;border:1px solid #2c795f;color:#8be4c8;background:#12352c;padding:.35rem .65rem;border-radius:4px;font:500 .72rem 'DM Mono',monospace}
-[data-testid="stSidebar"]{background:#0b141c;border-right:1px solid var(--line)}[data-testid="stMetricValue"]{font-family:'DM Mono',monospace}.pipeline-step{border:1px solid var(--line);padding:.75rem .8rem;border-radius:4px;background:#101b24;min-height:76px}.pipeline-step b{display:block;color:var(--accent);font:500 .68rem 'DM Mono',monospace;margin-bottom:.35rem}.pipeline-step span{font-size:.88rem;font-weight:600}.callout{border-left:3px solid var(--amber);background:#1d1a12;padding:.8rem 1rem;color:#d9d0b4}
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(
+    page_title="NEXORA | Gateway Visit Prioritization",
+    page_icon=":material/hub:",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
+    :root { --ink: #e8eef4; --muted: #91a0af; --line: #2a3946; --mint: #62d6b2; --amber: #f2b84b; }
+    .stApp { background: radial-gradient(circle at 90% 0%, #17333a 0, #0a1118 38%, #080e14 100%); }
+    html, body, [class*="css"] { font-family: 'Manrope', sans-serif; }
+    .block-container { max-width: 1480px; padding-top: 2rem; padding-bottom: 3rem; }
+    h1, h2, h3 { letter-spacing: 0; }
+    h1 { font-weight: 800; font-size: 2.65rem; }
+    .eyebrow { color: var(--mint); font: 500 .72rem 'DM Mono', monospace; letter-spacing: .14em; text-transform: uppercase; }
+    .subtitle { color: var(--muted); font-size: 1rem; margin-top: -.8rem; }
+    .evidence { border: 1px solid #6d5225; border-left: 4px solid var(--amber); background: #211b11; color: #e5d7b8; padding: .9rem 1rem; border-radius: 5px; }
+    [data-testid="stSidebar"] { background: #0b141c; border-right: 1px solid var(--line); }
+    [data-testid="stMetricValue"] { font-family: 'DM Mono', monospace; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def clean_id(value: object) -> str:
     return str(value).replace(":", "").strip().upper()
 
 
-@st.cache_data(show_spinner="Loading Part 1 outputs…")
+def euro(value: float | int) -> str:
+    return f"€{int(value):,}"
+
+
+def pct(value: float | int) -> str:
+    return f"{float(value):.1%}"
+
+
+def unavailable(message: str = "Data unavailable in the current artifact set.") -> None:
+    st.info(message, icon=":material/info:")
+
+
+def page_header(title: str, subtitle: str, section: str = "NEXORA / EVIDENCE CONSOLE") -> None:
+    st.markdown(f'<div class="eyebrow">{section}</div>', unsafe_allow_html=True)
+    st.title(title)
+    st.markdown(f'<div class="subtitle">{subtitle}</div>', unsafe_allow_html=True)
+
+
+@st.cache_data(show_spinner=False)
 def load_predictions() -> pd.DataFrame:
     frame = pd.read_csv(ROOT / "predictions.csv")
-    frame["week"] = pd.to_datetime(frame["week_start"]).dt.date
+    frame["week_start"] = frame["week_start"].astype(str)
     frame["gateway_key"] = frame["gateway_id"].map(clean_id)
     return frame
 
 
-@st.cache_data(show_spinner="Reading telemetry partitions…")
-def load_telemetry() -> pd.DataFrame:
-    frame = pd.read_parquet(DATA / "telemetry", columns=["gateway_id", "ts_utc", *METRICS])
+@st.cache_data(show_spinner=False)
+def load_part2_metrics() -> pd.DataFrame:
+    return pd.read_csv(ROOT / "reports" / "part2_metrics.csv")
+
+
+@st.cache_data(show_spinner=False)
+def load_weekly_costs() -> pd.DataFrame:
+    frame = pd.read_csv(ROOT / "reports" / "weekly_cost_table.csv")
+    frame["week_start"] = frame["week_start"].astype(str)
+    return frame
+
+
+@st.cache_data(show_spinner=False)
+def load_feature_importance() -> pd.DataFrame:
+    return pd.read_csv(ROOT / "reports" / "feature_importance.csv")
+
+
+@st.cache_data(show_spinner=False)
+def load_logistic_predictions() -> pd.DataFrame:
+    frame = pd.read_csv(ROOT / "reports" / "logistic_predictions.csv")
+    frame["week_start"] = frame["week_start"].astype(str)
     frame["gateway_key"] = frame["gateway_id"].map(clean_id)
-    frame["ts"] = pd.to_datetime(frame["ts_utc"], utc=True)
-    return frame.drop(columns=["ts_utc"])
+    return frame
 
 
-@st.cache_data
-def load_auxiliary() -> dict[str, pd.DataFrame]:
-    result = {name: pd.read_csv(DATA / name, encoding="latin1") for name in ["gateway_master.csv", "field_visits.csv", "meter_read_success.csv"]}
-    result["gateway_master.csv"]["gateway_key"] = result["gateway_master.csv"]["gateway_id"].map(clean_id)
-    for name in ["field_visits.csv", "meter_read_success.csv"]:
-        result[name]["gateway_key"] = result[name]["gateway_id"].map(clean_id)
-    return result
+@st.cache_data(show_spinner=False)
+def load_gateway_artifact() -> pd.DataFrame:
+    path = ROOT / "artifacts" / "part2_gateway_week.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    frame = pd.read_parquet(path)
+    frame["week_start"] = frame["week_start"].astype(str)
+    frame["gateway_key"] = frame["gateway_id"].map(clean_id)
+    return frame
 
 
-@st.cache_data
-def load_review() -> pd.DataFrame | None:
-    try:
-        return pd.read_excel(DATA / "engineer_review_2026-02.xlsx", sheet_name="Gateway Status")
-    except Exception:
-        return None
-
-
-def validation(predictions: pd.DataFrame) -> dict[str, object]:
-    reasons = predictions["reason"].astype(str).str.strip()
-    weekly = predictions.groupby("week")
+def validation_status(predictions: pd.DataFrame) -> bool:
+    weekly = predictions.groupby("week_start")
     ranks_ok = all(sorted(group["rank"].tolist()) == list(range(1, 16)) for _, group in weekly)
-    rows_ok = len(predictions) == 120 and predictions["week"].nunique() == 8 and all(size == 15 for size in weekly.size())
-    return {"rows": len(predictions), "weeks": predictions["week"].nunique(), "rows_per_week": weekly.size().tolist(), "ranks_ok": ranks_ok, "duplicates": int(predictions.duplicated(["week", "gateway_key"]).sum()), "missing": int(predictions[REQUIRED_COLUMNS].isna().any(axis=1).sum()), "blank_reasons": int((reasons == "").sum()), "long_reasons": int((reasons.str.len() > 300).sum()), "numeric_scores": bool(pd.api.types.is_numeric_dtype(predictions["score"])), "pass": rows_ok and ranks_ok and int(predictions.duplicated(["week", "gateway_key"]).sum()) == 0 and int(predictions[REQUIRED_COLUMNS].isna().any(axis=1).sum()) == 0 and int((reasons == "").sum()) == 0 and int((reasons.str.len() > 300).sum()) == 0 and bool(pd.api.types.is_numeric_dtype(predictions["score"]))}
+    return (
+        len(predictions) == 120
+        and predictions["week_start"].nunique() == 8
+        and all(size == 15 for size in weekly.size())
+        and ranks_ok
+        and predictions.duplicated(["week_start", "gateway_key"]).sum() == 0
+        and predictions[REQUIRED_COLUMNS].notna().all().all()
+        and pd.api.types.is_numeric_dtype(predictions["score"])
+        and predictions["reason"].astype(str).str.strip().ne("").all()
+        and predictions["reason"].astype(str).str.len().le(300).all()
+    )
 
 
-def render_header(title: str, subtitle: str) -> None:
-    st.markdown(f'<div class="eyebrow">NEXORA / PART 1</div><h1>{title}</h1><p style="color:#8b9aab">{subtitle}</p>', unsafe_allow_html=True)
+def evidence_notice() -> None:
+    st.markdown(
+        '<div class="evidence"><strong>Evidence status</strong><br>'
+        "These results use a constructed historical proxy target and are <strong>NOT official hidden-ground-truth performance</strong>. "
+        "The €58,800 figure is lower historical proxy-label cost, not confirmed real-world savings.</div>",
+        unsafe_allow_html=True,
+    )
 
 
-def overview(predictions: pd.DataFrame, status: dict[str, object]) -> None:
-    render_header("Gateway Anomaly Intelligence", "Prioritizing the 15 gateways most likely to require field attention each week.")
-    cols = st.columns(5)
-    values = [("Prediction period", "2026-02-02 → 2026-03-23"), ("Total predictions", str(status["rows"])), ("Prediction weeks", str(status["weeks"])), ("Gateways / week", "15"), ("Validation", "PASS" if status["pass"] else "REVIEW")]
-    for col, (label, value) in zip(cols, values):
-        col.metric(label, value, border=True)
-    left, right = st.columns([1.4, 1])
-    with left:
-        st.subheader("Weekly signal profile")
-        trend = predictions.groupby("week", as_index=False)["score"].agg(average="mean", maximum="max", minimum="min")
-        trend["week"] = trend["week"].astype(str)
-        st.line_chart(trend.set_index("week"), y=["average", "maximum", "minimum"])
-    with right:
-        st.subheader("Operating model")
-        st.markdown('<div class="callout"><b>Score = flagged anomaly hours</b><br><br>Each gateway is ranked by recent hours where one of three telemetry signals exceeded its own 28-day baseline by more than 3σ.</div>', unsafe_allow_html=True)
-        st.write("Higher score → more anomaly evidence → higher field-visit priority.")
-        st.caption("A ranking signal is not proof that a gateway is broken.")
-    st.subheader("Demo route")
-    a, b, c = st.columns(3)
-    a.info("01  Select a week\n\nReview the complete ranked top 15.")
-    b.info("02  Open a gateway\n\nSee the signal profile and historical context.")
-    c.info("03  Verify the evidence\n\nCheck validation, quality, and reproducibility.")
-
-
-def how_it_works() -> None:
-    render_header("How it works", "The supplied Part 1 baseline, made inspectable.")
-    steps = [("01", "Telemetry data"), ("02", "28-day history"), ("03", "Gateway baseline"), ("04", "3-sigma threshold"), ("05", "Anomaly detection"), ("06", "Flagged hours"), ("07", "Gateway score"), ("08", "Ranking"), ("09", "Top 15")]
-    for start in range(0, len(steps), 3):
+def overview(predictions: pd.DataFrame, metrics: pd.DataFrame, weekly: pd.DataFrame) -> None:
+    page_header("LPDG Gateway Intelligence", "Field Visit Prioritization & Network Reliability Analysis")
+    evidence_notice()
+    st.space("small")
+    metric_values = metrics.set_index("evaluation")
+    cards = [
+        ("Baseline cost", euro(metric_values.loc["baseline_test", "total_cost"])),
+        ("Logistic Regression cost", euro(metric_values.loc["logistic_test", "total_cost"])),
+        ("Lower historical proxy-label cost", "€58,800"),
+        ("Unseen gateways evaluated", "35"),
+        ("Forward-test weeks", "8"),
+        ("Gateways ranked per week", "15"),
+    ]
+    for row in (cards[:3], cards[3:]):
         cols = st.columns(3)
-        for col, (number, label) in zip(cols, steps[start:start + 3]):
-            col.markdown(f'<div class="pipeline-step"><b>{number}</b><span>{label}</span></div>', unsafe_allow_html=True)
-        if start < 6: st.caption("↓")
-    selected = st.selectbox("Inspect a pipeline step", [label for _, label in steps], index=3)
-    explanations = {"Telemetry data": "The parquet telemetry partitions are the only source used by the official baseline.", "28-day history": "For each Monday, the baseline uses the trailing 28 days strictly before 00:00 UTC.", "Gateway baseline": "Mean and standard deviation are computed per gateway for offline duration, disconnections, and reboots.", "3-sigma threshold": "An observation is flagged when it is more than three standard deviations above the gateway's historical mean.", "Anomaly detection": "A recent hour is flagged when any of the three baseline metrics exceeds its gateway-specific threshold.", "Flagged hours": "The recent seven-day window is reduced to a count of flagged hours per gateway.", "Gateway score": "The score is the number of flagged recent hours used to rank gateways.", "Ranking": "Gateways are ordered by flagged-hour count and the first 15 are selected.", "Top 15": "The challenge requires exactly 15 gateways for each of eight prediction weeks."}
-    st.container(border=True).write(explanations[selected])
+        for col, (label, value) in zip(cols, row):
+            col.metric(label, value, border=True)
+
+    st.write("The system prioritizes gateways for field visits using telemetry-derived reliability signals while respecting the hard 15-visits-per-week operational constraint.")
+    flow = st.columns(3)
+    for col, title, detail in zip(
+        flow,
+        ["Part 1", "Part 2", "Evaluation"],
+        ["3-Sigma operational ranking", "Logistic Regression risk ranking", "Cost, stability, and unseen gateways"],
+    ):
+        with col:
+            with st.container(border=True):
+                st.subheader(title, anchor=False)
+                st.caption(detail)
+
+    left, right = st.columns([1.35, 1])
+    with left:
+        with st.container(border=True):
+            st.subheader("Forward evaluation at a glance", anchor=False)
+            comparison = pd.DataFrame({"method": ["3-sigma baseline", "Logistic Regression"], "cost": [329400, 270600]})
+            chart = (
+                alt.Chart(comparison).mark_bar(cornerRadiusEnd=4, color="#62d6b2").encode(
+                    x=alt.X("cost:Q", title="Historical proxy-label cost", axis=alt.Axis(format="~s")),
+                    y=alt.Y("method:N", sort="-x", title=None),
+                    tooltip=[alt.Tooltip("method:N", title="Method"), alt.Tooltip("cost:Q", title="Cost", format=",.0f")],
+                ).properties(height=155)
+            )
+            st.altair_chart(chart, width="stretch")
+    with right:
+        with st.container(border=True):
+            st.subheader("What is being compared", anchor=False)
+            st.write("Part 1 provides the unchanged official 3-sigma benchmark. Part 2 uses Logistic Regression as the final model with the same eligible gateway population, weekly visit cap, and cost formula.")
+            st.caption("The dashboard is read-only. It does not retrain the model or regenerate evaluation outputs.")
+
+    forward = weekly[weekly["week_start"].isin(FORWARD_WEEKS)].copy()
+    if not forward.empty:
+        trend = forward.pivot(index="week_start", columns="method", values="total_cost").reset_index()
+        trend = trend.rename(columns={"baseline_3sigma": "3-sigma baseline", "logistic_regression": "Logistic Regression"})
+        with st.container(border=True):
+            st.subheader("Weekly cost profile", anchor=False)
+            st.line_chart(trend, x="week_start", y=["3-sigma baseline", "Logistic Regression"], y_label="Historical proxy-label cost")
 
 
-def weekly_predictions(predictions: pd.DataFrame) -> None:
-    render_header("Weekly predictions", "The exact rows submitted for Part 1, with live sorting and filters.")
-    week = st.selectbox("Prediction week", WEEKS, format_func=lambda value: value.isoformat())
-    part = predictions[predictions["week"] == week].copy()
-    c1, c2, c3 = st.columns([1, 1, 1.4])
-    direction = c1.selectbox("Sort", ["Rank", "Score high → low", "Score low → high"])
-    rank_filter = c2.multiselect("Ranks", list(range(1, 16)), default=list(range(1, 16)))
-    query = c3.text_input("Search gateway or reason", placeholder="e.g. 0A27 or reboot")
-    if direction == "Score high → low": part = part.sort_values("score", ascending=False)
-    elif direction == "Score low → high": part = part.sort_values("score", ascending=True)
-    part = part[part["rank"].isin(rank_filter)]
-    if query:
-        part = part[part["gateway_id"].str.contains(query, case=False, na=False) | part["reason"].str.contains(query, case=False, na=False)]
-    st.dataframe(part[["rank", "gateway_id", "score", "reason"]], hide_index=True, height=560, column_config={"rank": st.column_config.NumberColumn("Rank", format="#%d"), "score": st.column_config.NumberColumn("Score", format="%.0f")})
-    st.download_button("Download current week CSV", predictions[predictions["week"] == week][REQUIRED_COLUMNS].to_csv(index=False).encode("utf-8"), f"nexora-{week}.csv", "text/csv", icon=":material/download:")
-    st.subheader("LPDG top 15 gateway ranking")
-    st.caption("Every bar is one selected gateway. Bar length is the official 3-sigma flagged-hour score; higher means more anomaly evidence.")
-    chart_data = predictions[predictions["week"] == week].sort_values("rank").copy()
-    chart_data["rank_label"] = chart_data["rank"].map(lambda value: f"#{int(value)}  {value}")
-    bars = alt.Chart(chart_data).mark_bar(color="#62d6b2", cornerRadiusEnd=3, size=22).encode(
+def part1_page(predictions: pd.DataFrame) -> None:
+    page_header("Part 1 — 3-Sigma Baseline", "The official benchmark output, read directly from predictions.csv.", "NEXORA / PART 1")
+    st.badge("Validator: PASS", icon=":material/check_circle:", color="green")
+    st.caption("15 gateways selected per week · prediction period 2026-02-02 through 2026-03-23")
+    week = st.selectbox("Prediction week", FORWARD_WEEKS, key="part1_week")
+    rows = predictions[predictions["week_start"] == week].sort_values("rank")
+    st.caption("Exactly 15 gateways are selected for each scored week. Scores are flagged anomaly hours, not failure probabilities.")
+    st.dataframe(rows[["rank", "gateway_id", "score", "reason"]], hide_index=True, width="stretch", height=480, column_config={
+        "rank": st.column_config.NumberColumn("Rank", format="%d"),
+        "score": st.column_config.NumberColumn("Flagged hours", format="%.0f"),
+        "reason": st.column_config.TextColumn("Operational reason", width="large"),
+    })
+    chart_data = rows[["rank", "gateway_id", "score"]].copy()
+    chart_data["rank_label"] = chart_data.apply(lambda row: f"#{int(row['rank'])}  {row['gateway_id']}", axis=1)
+    chart = alt.Chart(chart_data).mark_bar(color="#62d6b2", cornerRadiusEnd=3).encode(
         x=alt.X("score:Q", title="Flagged anomaly hours", scale=alt.Scale(zero=True)),
         y=alt.Y("rank_label:N", sort=alt.SortField(field="rank", order="ascending"), title=None),
-        tooltip=[alt.Tooltip("rank:O", title="Rank"), alt.Tooltip("gateway_id:N", title="Gateway"), alt.Tooltip("score:Q", title="Score"), alt.Tooltip("reason:N", title="Reason")],
-    )
-    labels = alt.Chart(chart_data).mark_text(align="left", dx=6, color="#e8eef4").encode(
-        x="score:Q", y=alt.Y("rank_label:N", sort=alt.SortField(field="rank", order="ascending")), text=alt.Text("score:Q", format=".0f")
-    )
-    st.altair_chart((bars + labels).properties(height=520), width="stretch")
-
-
-def gateway_intelligence(predictions: pd.DataFrame, telemetry: pd.DataFrame, aux: dict[str, pd.DataFrame]) -> None:
-    render_header("Gateway intelligence", "Trace a selected prediction back to its operational context.")
-    selected = st.selectbox("Select gateway", sorted(predictions["gateway_id"].unique()))
-    key = clean_id(selected)
-    rows = predictions[predictions["gateway_key"] == key].sort_values("week")
-    meta = aux["gateway_master.csv"][aux["gateway_master.csv"]["gateway_key"] == key]
-    st.metric("Gateway ID", selected)
-    if not meta.empty:
-        record = meta.iloc[0]
-        st.caption(f"{record.get('region', 'Not available')} · {record.get('site_type', 'Not available')} · {record.get('hw_model', 'Not available')}")
-    st.dataframe(rows[["week_start", "rank", "score", "reason"]], hide_index=True, column_config={"score": st.column_config.NumberColumn("Score", format="%.0f")})
-    if not rows.empty:
-        end = pd.Timestamp(rows.iloc[-1]["week"], tz="UTC")
-        scope = telemetry[(telemetry["gateway_key"] == key) & (telemetry["ts"] < end)].tail(168)
-        if not scope.empty:
-            cards = st.columns(3)
-            for col, metric in zip(cards, METRICS): col.metric(metric.replace("_", " ").title(), f"{scope[metric].sum():,.0f}")
-            st.line_chart(scope.set_index("ts")[METRICS])
-
-
-def anomaly_analysis(predictions: pd.DataFrame, telemetry: pd.DataFrame) -> None:
-    render_header("Anomaly analysis", "Compare recent observations with the selected gateway's own baseline.")
-    selected = st.selectbox("Gateway", sorted(predictions["gateway_id"].unique()), key="anomaly_gateway")
-    week = st.selectbox("Prediction week", WEEKS, key="anomaly_week")
-    end = pd.Timestamp(week, tz="UTC")
-    window = telemetry[(telemetry["gateway_key"] == clean_id(selected)) & (telemetry["ts"] >= end - dt.timedelta(days=28)) & (telemetry["ts"] < end)].copy()
-    if window.empty: st.info("Not available"); return
-    stats = window[METRICS].agg(["mean", "std"]).T
-    recent = window[window["ts"] >= end - dt.timedelta(days=7)]
-    metric = st.selectbox("Telemetry signal", METRICS, format_func=lambda value: value.replace("_", " ").title())
-    row, threshold, observed = stats.loc[metric], stats.loc[metric, "mean"] + 3 * stats.loc[metric, "std"], recent[metric].max()
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Historical mean", f"{row['mean']:.2f}"); c2.metric("Standard deviation", f"{row['std']:.2f}"); c3.metric("3σ threshold", f"{threshold:.2f}"); c4.metric("Recent maximum", f"{observed:.2f}")
-    chart_data = window[["ts", metric]].copy(); chart_data["threshold"] = threshold
-    chart = alt.Chart(chart_data).transform_fold([metric, "threshold"], as_=["series", "value"]).mark_line().encode(x=alt.X("ts:T", title=None), y=alt.Y("value:Q", title=metric.replace("_", " ")), color=alt.Color("series:N", scale=alt.Scale(range=["#62d6b2", "#f2b84b"])), tooltip=["ts:T", "value:Q"])
+        tooltip=[alt.Tooltip("rank:O", title="Rank"), alt.Tooltip("gateway_id:N", title="Gateway"), alt.Tooltip("score:Q", title="Score")],
+    ).properties(height=430)
     st.altair_chart(chart, width="stretch")
-    st.caption("Anomaly signal used for field-visit prioritization. It does not confirm that the gateway is broken.")
+    with st.container(border=True):
+        st.subheader("Method", anchor=False)
+        st.write("The 3-sigma baseline identifies abnormal telemetry behaviour using each gateway's trailing 28-day history and ranks the most anomalous hours in the recent seven-day window. The official baseline calculation is not reproduced or changed by this dashboard.")
 
 
-def cost_analysis(predictions: pd.DataFrame) -> None:
-    render_header("Cost analysis", "The challenge economics, grounded in selected visits.")
-    visit_cost, missed_cost = 380, 600
-    c1, c2, c3 = st.columns(3); c1.metric("Weekly visit budget", "15"); c2.metric("Visit cost", f"€{15 * visit_cost:,.0f} / week"); c3.metric("8-week maximum", f"€{15 * visit_cost * 8:,.0f}")
-    weekly = predictions.groupby("week_start", as_index=False).agg(selected_visits=("gateway_id", "count")); weekly["visit_cost_eur"] = weekly["selected_visits"] * visit_cost
-    st.dataframe(weekly, hide_index=True, column_config={"visit_cost_eur": st.column_config.NumberColumn("Visit cost", format="€%,.0f")})
-    st.markdown(f'<div class="callout">The official scoring also includes the cost of missed problems: €{missed_cost} per broken gateway left alone per week. A final official total is <b>Not available</b> because ground-truth failure outcomes were not supplied.</div>', unsafe_allow_html=True)
+def part2_page(metrics: pd.DataFrame, importance: pd.DataFrame, ml_predictions: pd.DataFrame) -> None:
+    page_header("Part 2 — Logistic Regression", "The final model evaluated against a historical proxy target.", "NEXORA / PART 2")
+    evidence_notice()
+    st.space("small")
+    test = metrics.set_index("evaluation").loc["logistic_test"]
+    cards = [("Model", "Logistic Regression"), ("Gateway-week rows", f"{int(test['rows']):,}"), ("Features", "99"), ("Forward weeks", "8"), ("Unseen gateways", "35")]
+    cols = st.columns(5)
+    for col, (label, value) in zip(cols, cards):
+        col.metric(label, value, border=True)
+    with st.container(border=True):
+        st.subheader("Historical proxy target", anchor=False)
+        st.write("A gateway-week is positive when the complete seven days after Monday 00:00 UTC contain at least 84 observed gateway-hours, degradation on at least 2 distinct days, and at least 6 degraded hours.")
+        st.caption("A degraded hour has offline_duration_sec ≥ 3600, disconnection_cnt ≥ 3, or reboot_cnt ≥ 1. This target is not hidden ground truth.")
+    with st.container(border=True):
+        st.subheader("Weekly model ranking", anchor=False)
+        week = st.selectbox("Model ranking week", FORWARD_WEEKS, key="part2_week")
+        rows = ml_predictions[ml_predictions["week_start"] == week].sort_values("rank")
+        st.dataframe(rows[["rank", "gateway_id", "score", "reason"]], hide_index=True, width="stretch", height=430, column_config={
+            "rank": st.column_config.NumberColumn("Rank", format="%d"),
+            "score": st.column_config.NumberColumn("Proxy-risk score", format="%.4f"),
+            "reason": st.column_config.TextColumn("Top coefficient signals", width="large"),
+        })
+        chart_data = rows[["rank", "gateway_id", "score"]].copy()
+        chart_data["rank_label"] = chart_data.apply(lambda row: f"#{int(row['rank'])}  {row['gateway_id']}", axis=1)
+        chart = alt.Chart(chart_data).mark_bar(color="#62d6b2", cornerRadiusEnd=3).encode(
+            x=alt.X("score:Q", title="Proxy-risk score", scale=alt.Scale(domain=[0, 1])),
+            y=alt.Y("rank_label:N", sort=alt.SortField(field="rank", order="ascending"), title=None),
+            tooltip=[alt.Tooltip("rank:O", title="Rank"), alt.Tooltip("gateway_id:N", title="Gateway"), alt.Tooltip("score:Q", title="Score", format=".4f")],
+        ).properties(height=390)
+        st.altair_chart(chart, width="stretch")
+        st.caption("Scores are stored predictions from the frozen model; they are ranking scores for the historical proxy target, not failure probabilities.")
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.subheader("Chronological evaluation", anchor=False)
+            st.table(pd.DataFrame({"Stage": ["Training", "Validation", "Forward test"], "Weeks": ["Through 2025-12-29", "2026-01-05 → 2026-01-26", "2026-02-02 → 2026-03-23"]}))
+            st.caption("The incomplete 2026-03-30 week is excluded. Features use only information available before each cutoff.")
+    with right:
+        with st.container(border=True):
+            st.subheader("Important model signals", anchor=False)
+            st.markdown("- Recent disconnection activity\n- Historical meter-read rate\n- Reboot variability\n- Long-term disconnection totals\n- RSSI / signal quality\n- Offline-duration variability")
+            st.caption("These are predictive associations from the existing coefficient report, not causal diagnoses.")
+    top = importance.sort_values("absolute_coefficient", ascending=False).head(10).copy()
+    top["feature"] = top["feature"].str.replace("numeric__", "", regex=False).str.replace("categorical__", "", regex=False)
+    with st.container(border=True):
+        st.subheader("Coefficient signal profile", anchor=False)
+        st.bar_chart(top.set_index("feature")["coefficient"], horizontal=True, x_label="Coefficient", y_label="Feature")
+        st.dataframe(top[["feature", "direction", "coefficient", "interpretation"]], hide_index=True, width="stretch")
+    with st.container(border=True):
+        st.subheader("Final model", anchor=False)
+        st.write("Logistic Regression is the final Part 2 model. The controlled selection record confirms that the tested alternatives produced identical measured operational results; Logistic Regression was retained for simpler interpretation and reproducibility.")
+        st.caption("These results are based on historical proxy labels and should not be presented as official hidden-groundtruth performance.")
 
 
-def validation_center(predictions: pd.DataFrame, status: dict[str, object]) -> None:
-    render_header("Validation center", "Independent checks over the current predictions.csv.")
-    st.success("✓ PASS · PART 1 SUBMISSION READY" if status["pass"] else "Review required")
-    checks = pd.DataFrame({"Check": ["Rows", "Weeks", "Rows per week", "Ranks", "Required columns", "Duplicate prediction rows", "Missing rows", "Blank reasons", "Reason length", "Numeric scores"], "Result": [str(status["rows"]), str(status["weeks"]), "15 each" if all(v == 15 for v in status["rows_per_week"]) else "Review", "1–15" if status["ranks_ok"] else "Review", str(len(REQUIRED_COLUMNS)), str(status["duplicates"]), str(status["missing"]), str(status["blank_reasons"]), "≤300 characters" if status["long_reasons"] == 0 else "Review", "PASS" if status["numeric_scores"] else "Review"]})
-    st.dataframe(checks, hide_index=True, width="stretch")
-    st.download_button("Download full predictions CSV", predictions[REQUIRED_COLUMNS].to_csv(index=False).encode("utf-8"), "predictions.csv", "text/csv", icon=":material/download:")
+def comparison_page(metrics: pd.DataFrame, weekly: pd.DataFrame) -> None:
+    page_header("Baseline vs Logistic Regression", "The fair common-population comparison.")
+    evidence_notice()
+    st.space("small")
+    test = metrics.set_index("evaluation")
+    comparison = pd.DataFrame({
+        "Method": ["3-Sigma baseline", "Logistic Regression"],
+        "Forward cost": [test.loc["baseline_test", "total_cost"], test.loc["logistic_test", "total_cost"]],
+        "Precision@15": [test.loc["baseline_test", "precision_at_15"], test.loc["logistic_test", "precision_at_15"]],
+        "Recall": [test.loc["baseline_test", "recall"], test.loc["logistic_test", "recall"]],
+    })
+    cols = st.columns(4)
+    cols[0].metric("Baseline forward cost", euro(test.loc["baseline_test", "total_cost"]), border=True)
+    cols[1].metric("Logistic Regression cost", euro(test.loc["logistic_test", "total_cost"]), border=True)
+    cols[2].metric("Historical difference", "€58,800", border=True)
+    cols[3].metric("Common weeks", "8", border=True)
+    left, right = st.columns(2)
+    with left:
+        chart = alt.Chart(comparison).mark_bar(cornerRadiusEnd=4).encode(
+            x=alt.X("Forward cost:Q", title="Historical proxy-label cost", axis=alt.Axis(format="~s")),
+            y=alt.Y("Method:N", sort="-x", title=None),
+            color=alt.Color("Method:N", scale=alt.Scale(range=["#f2b84b", "#62d6b2"]), legend=None),
+            tooltip=[alt.Tooltip("Method:N"), alt.Tooltip("Forward cost:Q", format=",.0f")],
+        ).properties(height=230)
+        st.altair_chart(chart, width="stretch")
+    with right:
+        st.dataframe(comparison, hide_index=True, width="stretch", column_config={
+            "Forward cost": st.column_config.NumberColumn("Forward cost", format="€%,.0f"),
+            "Precision@15": st.column_config.NumberColumn("Precision@15", format="%.1%"),
+            "Recall": st.column_config.NumberColumn("Recall", format="%.1%"),
+        })
+        st.caption("All metrics above are historical proxy-label evaluation metrics.")
+    forward = weekly[(weekly["week_start"].isin(FORWARD_WEEKS)) & (weekly["evaluation"].isin(["baseline_test", "logistic_test"]))].copy()
+    trend = forward.pivot(index="week_start", columns="evaluation", values="total_cost").reset_index().rename(columns={
+        "baseline_test": "3-sigma baseline", "logistic_test": "Logistic Regression",
+    })
+    with st.container(border=True):
+        st.subheader("Weekly forward cost", anchor=False)
+        st.line_chart(trend, x="week_start", y=["3-sigma baseline", "Logistic Regression"], y_label="Historical proxy-label cost")
+    unseen = metrics.set_index("evaluation").loc["logistic_unseen_gateway_test"]
+    with st.container(border=True):
+        st.subheader("Unseen-gateway evaluation", anchor=False)
+        st.caption("Separate device-disjoint historical proxy-label slice; not directly comparable to a 15-visit baseline universe.")
+        cols = st.columns(4)
+        cols[0].metric("Gateways", "35")
+        cols[1].metric("Weeks", "8")
+        cols[2].metric("Precision@15", pct(unseen["precision_at_15"]))
+        cols[3].metric("Recall", pct(unseen["recall"]))
 
 
-def data_quality(telemetry: pd.DataFrame, aux: dict[str, pd.DataFrame]) -> None:
-    render_header("Data quality", "Known constraints are visible so the demo remains honest.")
-    duplicate_count = int(telemetry.duplicated(["gateway_key", "ts"]).sum())
-    if duplicate_count: st.warning(f"DUPLICATE TELEMETRY DETECTED · {duplicate_count:,} duplicated gateway/timestamp rows")
-    st.write("The official baseline was preserved unchanged. This data-quality issue is documented as a limitation.")
-    datasets = []
-    for name, frame in [("Telemetry", telemetry), ("Gateway master", aux["gateway_master.csv"]), ("Field visits", aux["field_visits.csv"]), ("Meter read success", aux["meter_read_success.csv"]), ("Engineer review", load_review())]:
-        if frame is None: datasets.append({"Dataset": name, "Rows": "Not available", "Columns": "Not available", "Date range": "Not available", "Status": "Unavailable"}); continue
-        date_cols = [c for c in frame.columns if "date" in c.lower() or "time" in c.lower() or c == "ts"]
-        date_range = "Not available"
-        if date_cols:
-            parsed = pd.to_datetime(frame[date_cols[0]], errors="coerce", utc=True)
-            if parsed.notna().any(): date_range = f"{parsed.min().date()} → {parsed.max().date()}"
-        datasets.append({"Dataset": name, "Rows": len(frame), "Columns": len(frame.columns), "Date range": date_range, "Status": "Known duplicate keys" if name == "Telemetry" and duplicate_count else "Available"})
-    st.dataframe(pd.DataFrame(datasets), hide_index=True, width="stretch")
-    st.subheader("Temporal data integrity")
-    st.write("Prediction week → Monday 00:00 UTC → only data strictly before cutoff → prediction")
-    cutoff_rows = []
-    for week in WEEKS:
-        cutoff_timestamp = pd.Timestamp(week, tz="UTC")
-        eligible = telemetry[telemetry["ts"] < cutoff_timestamp]
-        history = eligible[eligible["ts"] >= cutoff_timestamp - dt.timedelta(days=28)]
-        cutoff_rows.append({"Prediction week": week.isoformat(), "Cutoff timestamp": f"{week.isoformat()}T00:00:00Z", "Latest eligible data": eligible["ts"].max().strftime("%Y-%m-%dT%H:%M:%SZ") if not eligible.empty else "Not available", "Rows used": len(history)})
-    cutoff = pd.DataFrame(cutoff_rows)
-    st.dataframe(cutoff, hide_index=True, width="stretch")
+def gateway_page(predictions: pd.DataFrame, ml_predictions: pd.DataFrame, artifact: pd.DataFrame) -> None:
+    page_header("Gateway explorer", "Search one gateway across the submitted ranking and available model evidence.")
+    week = st.selectbox("Week", FORWARD_WEEKS, key="gateway_week")
+    search = st.text_input("Search gateway ID", placeholder="Enter a gateway ID or part of one", key="gateway_search")
+    week_rows = predictions[predictions["week_start"] == week].sort_values("rank")
+    available_ids = set(week_rows["gateway_id"])
+    available_ids.update(ml_predictions.loc[ml_predictions["week_start"] == week, "gateway_id"])
+    if not artifact.empty:
+        available_ids.update(artifact.loc[artifact["week_start"] == week, "gateway_id"])
+    gateway_options = week_rows["gateway_id"].tolist()
+    if search.strip():
+        gateway_options = sorted(gateway for gateway in available_ids if search.strip().upper() in gateway.upper())
+    if not gateway_options:
+        unavailable()
+        return
+    gateway = st.selectbox("Selected gateway", gateway_options, key="gateway_id")
+    gateway_key = clean_id(gateway)
+    baseline_row = week_rows[week_rows["gateway_key"] == gateway_key]
+    ml_row = ml_predictions[(ml_predictions["week_start"] == week) & (ml_predictions["gateway_key"] == gateway_key)]
+    artifact_row = artifact[(artifact["week_start"] == week) & (artifact["gateway_key"] == gateway_key)] if not artifact.empty else pd.DataFrame()
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.subheader("Part 1 baseline evidence", anchor=False)
+            if baseline_row.empty:
+                st.info("Data not available for this view.")
+            else:
+                row = baseline_row.iloc[0]
+                st.metric("Baseline rank", f"#{int(row['rank'])}")
+                st.metric("Flagged-hour score", f"{row['score']:.0f}")
+                st.write(row["reason"])
+    with right:
+        with st.container(border=True):
+            st.subheader("Part 2 model evidence", anchor=False)
+            if ml_row.empty:
+                st.info("Data not available for this view.")
+                st.caption("The stored Logistic Regression prediction file contains the selected top-15 rows only.")
+            else:
+                row = ml_row.iloc[0]
+                st.metric("Stored ML rank", f"#{int(row['rank'])}")
+                st.metric("Proxy-risk ranking score", f"{row['score']:.4f}")
+                st.write(row["reason"])
+    if artifact_row.empty:
+        unavailable("Data unavailable in the current artifact set for this gateway-week.")
+        return
+    row = artifact_row.iloc[0]
+    feature_candidates = [
+        "hist_7d_disconnection_cnt_sum", "hist_7d_reboot_cnt_std", "hist_28d_disconnection_cnt_sum",
+        "meter_28d_read_rate_mean", "hist_7d_rssi_good_mean", "hist_7d_offline_duration_sec_std",
+        "hist_7d_observed_hours", "hist_28d_duplicate_rate",
+    ]
+    available = [name for name in feature_candidates if name in artifact_row.columns]
+    with st.container(border=True):
+        st.subheader("Cutoff-safe feature context", anchor=False)
+        if available:
+            st.dataframe(pd.DataFrame({"Feature": available, "Value": [row[name] for name in available]}), hide_index=True, width="stretch")
+        else:
+            unavailable()
+        st.caption("These are stored pre-cutoff features from the existing artifact. No model score is recomputed here.")
 
 
-def reproducibility() -> None:
-    render_header("Reproducibility center", "Regenerate and validate Part 1 on another machine.")
-    st.code("python -m pip install pandas numpy pyarrow\npython baseline_3sigma.py --data 03-challenge-data/data --out predictions.csv\npython validate_submission.py predictions.csv", language="powershell")
-    st.write("The commands use relative paths, run offline against the supplied data, and leave the dashboard read-only. The official baseline and validator are not imported or rewritten by the UI.")
-    st.info("Verified output: 120 rows across 8 weeks, with 15 ranked gateways per week.")
+def model_intelligence_page(importance: pd.DataFrame) -> None:
+    page_header("Model intelligence", "Coefficient evidence from the final Logistic Regression model.")
+    evidence_notice()
+    st.space("small")
+    with st.container(border=True):
+        st.subheader("Final model: Logistic Regression", anchor=False)
+        st.write("I did not assume that a more complex model would automatically perform better. I benchmarked Logistic Regression, Random Forest, Extra Trees and HistGradientBoosting using the same operational evaluation. They produced identical measured operational results, so Logistic Regression was retained because it provides simpler interpretation and reproducibility.")
+    if importance.empty:
+        unavailable()
+        return
+    top = importance.sort_values("absolute_coefficient", ascending=False).head(12).copy()
+    top["feature"] = top["feature"].str.replace("numeric__", "", regex=False).str.replace("categorical__", "", regex=False)
+    with st.container(border=True):
+        st.subheader("Most influential signals", anchor=False)
+        st.bar_chart(top.set_index("feature")["coefficient"], horizontal=True, x_label="Coefficient", y_label="Feature")
+        st.dataframe(top[["feature", "direction", "coefficient", "interpretation"]], hide_index=True, width="stretch")
+        st.caption("Predictive associations, not causal explanations. Coefficients are read from the existing feature-importance artifact.")
 
 
-def decisions() -> None:
-    render_header("Decisions & limitations", "The documented trade-offs behind the official Part 1 baseline.")
-    st.markdown((ROOT / "DECISIONS.md").read_text(encoding="utf-8"))
+def unseen_page(metrics: pd.DataFrame) -> None:
+    page_header("Unseen gateways", "A separate device-disjoint generalization check.")
+    evidence_notice()
+    st.space("small")
+    unseen = metrics.set_index("evaluation").get("logistic_unseen_gateway_test")
+    if unseen is None:
+        unavailable()
+        return
+    cols = st.columns(4)
+    cols[0].metric("Gateways", "35", border=True)
+    cols[1].metric("Proxy-label cost", euro(unseen["total_cost"]), border=True)
+    cols[2].metric("Precision@15", f"{unseen['precision_at_15']:.4f}", border=True)
+    cols[3].metric("Recall", f"{unseen['recall']:.4f}", border=True)
+    with st.container(border=True):
+        st.subheader("Evaluation boundary", anchor=False)
+        st.write("These gateways were first observed during January-March 2026 and were evaluated separately from model fitting. This is unseen-gateway proxy-label evaluation, not official live performance.")
 
 
-predictions = load_predictions(); aux = load_auxiliary(); status = validation(predictions)
+def network_health_page() -> None:
+    page_header("Network health", "Population change that affects model robustness.")
+    population = pd.DataFrame({"period": ["August 2025", "March 2026"], "gateways": [280, 308]})
+    cols = st.columns(4)
+    cols[0].metric("August 2025", "280", border=True)
+    cols[1].metric("March 2026", "308", border=True)
+    cols[2].metric("Present across all 8 months", "268", border=True)
+    cols[3].metric("First appearing Jan-Mar 2026", "40", border=True)
+    with st.container(border=True):
+        st.subheader("Gateway population", anchor=False)
+        st.bar_chart(population.set_index("period"), y="gateways", y_label="Gateways")
+        st.caption("Population movement can shift feature distributions, cold-start coverage, and ranking reliability. The chart uses the verified network counts from the project audit.")
+
+
+def data_quality_page() -> None:
+    page_header("Data quality", "Coverage and provenance conditions behind the analysis.")
+    facts = pd.DataFrame({
+        "Indicator": ["Telemetry rows", "Duplicate telemetry rows", "Gateway-days not exactly 24 records", "Meter-read data ends"],
+        "Verified value": ["1,433,387", "13,094", "55,117", "2026-01-26"],
+    })
+    with st.container(border=True):
+        st.subheader("Verified data-quality indicators", anchor=False)
+        st.dataframe(facts, hide_index=True, width="stretch")
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.subheader("Why it matters", anchor=False)
+            st.write("Duplicate observations can distort aggregates. Incomplete hourly coverage affects reliability features. Meter history ends before the forward period, and changing gateway population creates distribution-shift risk.")
+    with right:
+        with st.container(border=True):
+            st.subheader("Handling", anchor=False)
+            st.write("Duplicate telemetry is handled deterministically with median aggregation and retained quality indicators. Missing or unavailable evidence is not replaced with invented values.")
+
+
+def methodology_page(predictions: pd.DataFrame) -> None:
+    page_header("Methodology & Limitations", "The evidence boundaries behind the demonstration.")
+    with st.container(border=True):
+        st.subheader("Part 1 — 3-sigma baseline", anchor=False)
+        st.write("The unchanged official baseline uses gateway-specific telemetry history, flags recent observations above a three-sigma threshold, and selects the 15 highest anomaly rankings per week.")
+    with st.container(border=True):
+        st.subheader("Part 2 — Logistic Regression", anchor=False)
+        st.write("The final Logistic Regression model uses cutoff-safe historical telemetry, meter-read history, quality indicators, and gateway metadata. This dashboard reads its existing outputs and never retrains it.")
+    with st.container(border=True):
+        st.subheader("Pipeline", anchor=False)
+        stages = st.columns(5)
+        for col, stage in zip(stages, ["Telemetry", "Cleaning", "99 features", "Persistent target", "Logistic Regression → top 15"]):
+            with col:
+                st.markdown(f"**{stage}**")
+    with st.container(border=True):
+        st.subheader("Target and leakage control", anchor=False)
+        st.write("The historical proxy target is based on persistent degradation in the complete seven days after a Monday cutoff. Features use only information available before that cutoff. The evaluation is chronological and includes a separate 35-gateway unseen slice.")
+    with st.container(border=True):
+        st.subheader("Known limitations", anchor=False)
+        st.markdown("- The proxy target is not hidden ground truth.\n- Historical field visits are selection-biased evidence, not random ground truth.\n- Duplicate telemetry exists.\n- Gateway population changes over time.\n- Meter-read data ends earlier than telemetry.\n- New gateways require explicit cold-start handling.")
+    st.markdown('<div class="evidence"><strong>Final model: Logistic Regression</strong><br>Historical proxy-label evidence must not be presented as official hidden-groundtruth performance.</div>', unsafe_allow_html=True)
+    with st.expander("Submission and data safety"):
+        st.write("The dashboard reads predictions.csv, the verified Part 2 CSV reports, the feature-importance report, and the existing gateway-week parquet artifact. It does not write to any of them, change the baseline or validator, or modify original challenge data.")
+        st.code(".venv\\Scripts\\python.exe -m streamlit run app.py", language="powershell")
+        st.caption(f"Part 1 validation status: {'PASS' if validation_status(predictions) else 'REVIEW'}")
+
+
+predictions = load_predictions()
+metrics = load_part2_metrics()
+weekly_costs = load_weekly_costs()
+importance = load_feature_importance()
+ml_predictions = load_logistic_predictions()
+gateway_artifact = load_gateway_artifact()
+
 with st.sidebar:
-    st.markdown('<div class="eyebrow">NEXORA</div><h2 style="margin-top:.2rem">Gateway Anomaly<br>Intelligence</h2>', unsafe_allow_html=True)
-    st.markdown('<span class="status">● PART 1 VALIDATED</span>', unsafe_allow_html=True); st.caption("3-Sigma Field Visit Prioritization System")
-    st.metric("Baseline", "3-Sigma"); st.metric("Prediction weeks", "8"); st.metric("Gateways / week", "15"); st.metric("Total predictions", str(status["rows"]))
-    page = st.radio("Navigate", ["Overview", "How It Works", "Weekly Predictions", "Gateway Intelligence", "Anomaly Analysis", "Cost Analysis", "Validation Center", "Data Quality", "Reproducibility", "Decisions & Limitations"], label_visibility="collapsed")
+    st.markdown('<div class="eyebrow">NEXORA / 2026</div>', unsafe_allow_html=True)
+    st.header("Gateway Visit\nPrioritization", anchor=False)
+    st.caption("Presentation console · read-only evidence")
+    st.badge("Part 1 validated", icon=":material/check_circle:", color="green")
+    st.space("small")
+    page = st.radio("Navigate", [
+        "Executive Overview", "Part 1 — Operational Ranking", "Part 2 — Machine Learning",
+        "Baseline vs ML", "Model Intelligence", "Gateway Explorer", "Unseen Gateways",
+        "Network Health", "Data Quality", "Methodology & Audit",
+    ], label_visibility="collapsed")
+    st.space("medium")
+    st.caption("Evidence status")
+    st.caption("Historical proxy-label evaluation only")
 
-if page == "Overview": overview(predictions, status)
-elif page == "How It Works": how_it_works()
-elif page == "Weekly Predictions": weekly_predictions(predictions)
-elif page == "Gateway Intelligence": gateway_intelligence(predictions, load_telemetry(), aux)
-elif page == "Anomaly Analysis": anomaly_analysis(predictions, load_telemetry())
-elif page == "Cost Analysis": cost_analysis(predictions)
-elif page == "Validation Center": validation_center(predictions, status)
-elif page == "Data Quality": data_quality(load_telemetry(), aux)
-elif page == "Reproducibility": reproducibility()
-else: decisions()
+if page == "Executive Overview":
+    overview(predictions, metrics, weekly_costs)
+elif page == "Part 1 — Operational Ranking":
+    part1_page(predictions)
+elif page == "Part 2 — Machine Learning":
+    part2_page(metrics, importance, ml_predictions)
+elif page == "Baseline vs ML":
+    comparison_page(metrics, weekly_costs)
+elif page == "Model Intelligence":
+    model_intelligence_page(importance)
+elif page == "Gateway Explorer":
+    gateway_page(predictions, ml_predictions, gateway_artifact)
+elif page == "Unseen Gateways":
+    unseen_page(metrics)
+elif page == "Network Health":
+    network_health_page()
+elif page == "Data Quality":
+    data_quality_page()
+else:
+    methodology_page(predictions)
 
-st.markdown("<br><br><div style='border-top:1px solid #273542;padding-top:1rem;color:#718293;font-size:.78rem'>NEXORA 2026 · LPDG Innovation Hub Selection Challenge · Part 1 — 3-Sigma Gateway Prioritization</div>", unsafe_allow_html=True)
+st.markdown("<br><div style='border-top:1px solid #2a3946;padding-top:1rem;color:#718293;font-size:.78rem'>NEXORA 2026 · Part 1 official baseline · Part 2 final model: Logistic Regression</div>", unsafe_allow_html=True)

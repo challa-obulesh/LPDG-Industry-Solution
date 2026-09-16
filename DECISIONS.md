@@ -1,6 +1,6 @@
-# Part 1 Decisions
+# Submission Decisions
 
-This document records exactly five important decisions for the LPDG Innovation Hub Selection Challenge 2026 Part 1 submission. Part 2 is documented as a future choice only; it has not been implemented.
+This document records exactly five important decisions for the LPDG Innovation Hub Selection Challenge 2026 submission. Part 1 remains protected, and the final Part 2 Logistic Regression model is documented separately in the Part 2 reports.
 
 ## 1. Ranking method
 
@@ -34,13 +34,15 @@ This document records exactly five important decisions for the LPDG Innovation H
 
 **C. Why I did not choose it:** Fifteen visits is a hard challenge limit. The required schema needs a score and reason, and concise reasons are easier for an operations reviewer to use while remaining within the validator's 300-character limit.
 
-## 5. Part 2 area choice
+## 5. Part 2 area and model scope
 
-**A. What I chose:** I intend to choose Data Science / Machine Learning for Part 2. Part 1 uses a simple official 3-sigma baseline, while Part 2 could investigate whether additional data and features, together with a learned approach, improve gateway prioritisation. The future work should remain explainable and reproducible.
+**A. What I chose:** I chose Data Science / Machine Learning for Part 2. Final model: Logistic Regression. Part 1 uses the unchanged official 3-sigma baseline; Part 2 uses additional cutoff-safe data and features under the same visit cap and cost formula.
 
-**B. Alternative:** I could have chosen Software Development, DevOps, MLOps, or another challenge area.
+**B. Alternative:** I benchmarked Random Forest, Extra Trees, and HistGradientBoosting as model-selection checks. I could also have chosen Software Development, DevOps, MLOps, or another challenge area.
 
-**C. Why I did not choose it:** Data Science / Machine Learning is the area most directly suited to testing whether field visits, meter-read success, gateway metadata, engineer review, and historical outcomes add predictive value beyond telemetry anomalies. This is only a documented Part 2 choice; no ML model or Part 2 implementation has been added.
+**C. Why I did not choose it:** I did not assume that a more complex model would automatically perform better. I benchmarked Logistic Regression, Random Forest, Extra Trees and HistGradientBoosting using the same operational evaluation. They produced identical measured results, so I retained Logistic Regression because it provides simpler interpretation and reproducibility. It is a historical proxy-label result, not official hidden-groundtruth performance.
+
+**D. Limitation/trade-off:** The proxy target is derived from future telemetry rather than confirmed failure outcomes, so the model must not be presented as an official challenge improvement.
 
 # What This Solution Cannot Do
 
