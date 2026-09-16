@@ -16,6 +16,7 @@ reports/*
 !reports/part2_weekly_metrics.csv
 !reports/logistic_predictions.csv
 !reports/feature_importance.csv
+!reports/weekly_cost_table.csv
 *.log
 Thumbs.db
 Desktop.ini
