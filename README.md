@@ -1,9 +1,12 @@
 LPDG INNOVATION HUB - SELECTION CHALLENGE 2026
 ==============================================
 
-## Live Demo
+## Live Demo and Video Presentation
 
 [Open the live Streamlit dashboard](https://lpdg-industry-solutionutmsource.streamlit.app/)
+
+Face-to-face video presentation for the NEXORA 2026 — LPDG x RGMCET Challenge:
+[Watch the Video](https://drive.google.com/file/d/194BmJCXJXUrbrouhyy7fZ5r_dRVATwVu/view?usp=drivesdk)
 
 WHAT TO DO FIRST
 
