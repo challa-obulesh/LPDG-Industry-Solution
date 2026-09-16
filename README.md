@@ -1,6 +1,10 @@
 LPDG INNOVATION HUB - SELECTION CHALLENGE 2026
 ==============================================
 
+## Live Demo
+
+[Open the live Streamlit dashboard](https://lpdg-industry-solutionutmsource.streamlit.app/)
+
 WHAT TO DO FIRST
 
   1. Read 01-Challenge-Brief.pdf. That is the whole task: what to build, which
